@@ -11,7 +11,6 @@ import { ExecutionLog, RequestRecord } from './components/ExecutionLog';
 import { CodeSnippet } from './components/CodeSnippet';
 
 export function App() {
-  // Core resilience instances
   const circuitBreakerRef = useRef<CircuitBreaker>(
     new CircuitBreaker({
       name: 'payment-gateway',
@@ -32,7 +31,6 @@ export function App() {
   const cb = circuitBreakerRef.current;
   const limiter = rateLimiterRef.current;
 
-  // Simulator Configuration
   const [simConfig, setSimConfig] = useState<SimulatorConfig>({
     errorRate: 0.35,
     latencyMs: 120,
@@ -41,7 +39,6 @@ export function App() {
     enableRetry: true,
   });
 
-  // Telemetry States
   const [circuitMetrics, setCircuitMetrics] = useState<CircuitBreakerMetrics>(() => cb.getMetrics());
   const [tokenStats, setTokenStats] = useState(() => limiter.getStats());
   const [retryStats, setRetryStats] = useState({ totalRetries: 0, successfulRetries: 0 });
@@ -49,7 +46,7 @@ export function App() {
   const [isExecuting, setIsExecuting] = useState(false);
   const [isAutoTraffic, setIsAutoTraffic] = useState(false);
 
-  // Periodically refresh stats (for continuous token refill and circuit breaker timers)
+  // poll so the token bar and the open -> half-open timer move without a request
   useEffect(() => {
     const timer = setInterval(() => {
       setCircuitMetrics(cb.getMetrics());
@@ -59,7 +56,6 @@ export function App() {
     return () => clearInterval(timer);
   }, [cb, limiter]);
 
-  // Execute a single simulated request through the resilience pipeline
   const executeRequest = useCallback(async () => {
     setIsExecuting(true);
 
@@ -81,12 +77,10 @@ export function App() {
 
     const outcome = await pipeline.execute(
       async (attempt: number) => {
-        // Simulated network latency
         await new Promise((r) => setTimeout(r, simConfig.latencyMs));
 
-        // Simulated network/service failure based on slider
         if (Math.random() < simConfig.errorRate) {
-          throw new Error('HTTP 503: Gateway Unavailable / Upstream Timeout');
+          throw new Error('HTTP 503');
         }
 
         return {
@@ -94,7 +88,6 @@ export function App() {
           id: `tx_${Math.random().toString(36).slice(2, 8)}`,
         };
       },
-      // Graceful Fallback
       (error) => {
         return {
           status: 'FALLBACK',
@@ -103,7 +96,6 @@ export function App() {
       }
     );
 
-    // Update retry stats
     if (outcome.attempts > 1) {
       setRetryStats((prev) => ({
         totalRetries: prev.totalRetries + (outcome.attempts - 1),
@@ -111,7 +103,6 @@ export function App() {
       }));
     }
 
-    // Add to execution log
     const newRecord: RequestRecord = {
       id: reqId,
       timestamp: timeStr,
@@ -119,22 +110,20 @@ export function App() {
       outcome,
     };
 
-    setRecords((prev) => [newRecord, ...prev.slice(0, 49)]); // keep last 50
+    setRecords((prev) => [newRecord, ...prev.slice(0, 49)]);
     setCircuitMetrics(cb.getMetrics());
     setTokenStats(limiter.getStats());
     setIsExecuting(false);
   }, [cb, limiter, simConfig]);
 
-  // Burst handler
   const handleSendBurst = async (count: number) => {
     for (let i = 0; i < count; i++) {
       executeRequest();
-      // tiny stagger so they don't hit the exact same millisecond
+      // small stagger so they don't all land in the same millisecond
       await new Promise((r) => setTimeout(r, 20));
     }
   };
 
-  // Auto-traffic interval
   useEffect(() => {
     let interval: NodeJS.Timeout | null = null;
     if (isAutoTraffic) {
@@ -147,7 +136,6 @@ export function App() {
     };
   }, [isAutoTraffic, executeRequest]);
 
-  // Circuit Breaker manual actions
   const handleForceTrip = () => {
     cb.forceOpen();
     setCircuitMetrics(cb.getMetrics());
