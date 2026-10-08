@@ -1,40 +1,27 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  content: [
-    "./index.html",
-    "./src/**/*.{js,ts,jsx,tsx}",
-  ],
-  darkMode: 'class',
+  content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
     extend: {
       colors: {
-        background: '#090d16',
-        surface: '#0f172a',
-        'surface-elevated': '#1e293b',
-        'surface-border': '#334155',
-        primary: {
-          50: '#f0f9ff',
-          100: '#e0f2fe',
-          400: '#38bdf8',
-          500: '#0ea5e9',
-          600: '#0284c7',
+        paper: '#f3efe6',
+        card: '#faf7f0',
+        ink: {
+          DEFAULT: '#1d1b17',
+          soft: '#4a463e',
+          faint: '#8a8477',
         },
-        accent: {
-          emerald: '#10b981',
-          amber: '#f59e0b',
-          rose: '#f43f5e',
-          cyan: '#06b6d4',
-          violet: '#8b5cf6',
-        }
+        rule: '#d6cfbf',
+        signal: '#d9421c',
+        ok: '#2f6f4e',
+        warn: '#b7791f',
+        tide: '#2b5d7c',
       },
       fontFamily: {
-        mono: ['JetBrains Mono', 'Fira Code', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
-        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+        display: ['Fraunces', 'Georgia', 'serif'],
+        mono: ['"IBM Plex Mono"', 'ui-monospace', 'Menlo', 'Consolas', 'monospace'],
+        sans: ['"IBM Plex Sans"', 'system-ui', 'sans-serif'],
       },
-      animation: {
-        'pulse-fast': 'pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite',
-        'ping-slow': 'ping 2s cubic-bezier(0, 0, 0.2, 1) infinite',
-      }
     },
   },
   plugins: [],
