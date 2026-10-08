@@ -27,7 +27,7 @@ await sleep(800);
 await page.evaluate(() => document.querySelector('ul li button')?.click());
 await sleep(300);
 
-const out = path.resolve('docs/assets/dashboard.png');
+const out = path.resolve('docs/assets/workbench.png');
 await page.screenshot({ path: out });
 console.log('saved', out);
 await browser.close();
