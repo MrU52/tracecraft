@@ -13,85 +13,110 @@ interface ExecutionLogProps {
   onClear: () => void;
 }
 
-const VERDICT: Record<string, { text: string; tone: string }> = {
-  SUCCESS: { text: '200', tone: 'text-ok' },
-  RETRIED: { text: '200 after retry', tone: 'text-tide' },
-  RATE_LIMITED: { text: '429', tone: 'text-warn' },
-  CIRCUIT_OPEN: { text: '503 short-circuit', tone: 'text-signal' },
-  FAILED: { text: '500 gave up', tone: 'text-signal' },
+const VERDICT: Record<string, string> = {
+  SUCCESS: '200',
+  RETRIED: '200',
+  RATE_LIMITED: '429',
+  CIRCUIT_OPEN: 'OPEN',
+  FAILED: '500',
+};
+
+const Swatch: React.FC<{ kind: 'ok' | 'bad' | 'wait' | 'rej'; label: string }> = ({ kind, label }) => (
+  <span className="flex items-center gap-1.5">
+    {kind === 'ok' && <span className="w-5 h-3 bg-ink" />}
+    {kind === 'bad' && <span className="w-5 h-3 hatch" />}
+    {kind === 'wait' && <span className="w-5 border-t-2 border-dashed border-ink" />}
+    {kind === 'rej' && <span className="w-2 h-3 bg-blue" />}
+    {label}
+  </span>
+);
+
+// One row of the waterfall: attempts are bars, backoff waits are dashed gaps.
+const Track: React.FC<{ record: RequestRecord; axisMs: number }> = ({ record, axisMs }) => {
+  const { outcome } = record;
+  const pct = (ms: number) => `${Math.max(0.4, (ms / axisMs) * 100)}%`;
+
+  if (outcome.attemptLogs.length === 0) {
+    return <span className="inline-block w-2 h-4 bg-blue" title="rejected before reaching the upstream" />;
+  }
+
+  return (
+    <div className="flex items-center h-4">
+      {outcome.attemptLogs.map((log, i) => (
+        <React.Fragment key={i}>
+          <span
+            className={`h-4 shrink-0 ${log.error ? 'hatch' : 'bg-ink'}`}
+            style={{ width: pct(log.durationMs) }}
+            title={`attempt ${log.attemptNumber}: ${log.durationMs}ms${log.error ? ` (${log.error})` : ''}`}
+          />
+          {log.backoffDelayMs !== undefined && (
+            <span
+              className="shrink-0 border-t-2 border-dashed border-ink"
+              style={{ width: pct(log.backoffDelayMs) }}
+              title={`waited ${log.backoffDelayMs}ms`}
+            />
+          )}
+        </React.Fragment>
+      ))}
+    </div>
+  );
 };
 
 export const ExecutionLog: React.FC<ExecutionLogProps> = ({ records, onClear }) => {
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const axisMs = Math.max(400, ...records.map((r) => r.outcome.totalDurationMs));
 
   return (
-    <div className="border border-ink bg-card">
-      <div className="px-4 py-2.5 border-b border-ink flex items-center justify-between">
-        <h2 className="font-display text-lg font-bold">Request log</h2>
-        <button onClick={onClear} className="label hover:text-signal">
-          clear
-        </button>
+    <section className="bg-white border-2 border-ink">
+      <div className="px-4 py-3 border-b-2 border-ink flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+        <h2 className="text-2xl font-black uppercase leading-none [font-stretch:70%]">Requests</h2>
+        <div className="cap flex flex-wrap items-center gap-x-4 gap-y-1">
+          <Swatch kind="ok" label="attempt ok" />
+          <Swatch kind="bad" label="attempt failed" />
+          <Swatch kind="wait" label="backoff" />
+          <Swatch kind="rej" label="turned away" />
+          <button onClick={onClear} className="text-mute hover:text-blue underline underline-offset-4">
+            clear
+          </button>
+        </div>
       </div>
 
       {records.length === 0 ? (
-        <p className="px-4 py-10 text-center font-mono text-xs text-ink-faint">
-          nothing yet. send a request and it shows up here.
-        </p>
+        <p className="px-4 py-12 cap text-mute text-center">no requests yet</p>
       ) : (
-        <ul className="max-h-[440px] overflow-y-auto divide-y divide-rule font-mono text-xs">
+        <ul className="max-h-[460px] overflow-y-auto divide-y divide-ink/15">
           {records.map((rec) => {
             const { outcome } = rec;
-            const verdict = VERDICT[outcome.status] ?? { text: outcome.status, tone: '' };
-            const open = expandedId === rec.id;
-
+            const rejected = outcome.attemptLogs.length === 0;
+            const open = openId === rec.id;
             return (
-              <li key={rec.id}>
+              <li key={rec.id} data-row>
                 <button
-                  onClick={() => setExpandedId(open ? null : rec.id)}
-                  className="w-full grid grid-cols-[88px_1fr_auto_56px] items-center gap-3 px-4 py-2 text-left hover:bg-paper"
+                  onClick={() => setOpenId(open ? null : rec.id)}
+                  className="w-full grid grid-cols-[76px_1fr_92px] sm:grid-cols-[96px_1fr_112px] items-center gap-3 px-4 py-2 text-left hover:bg-page/60"
                 >
-                  <span className="text-ink-faint">{rec.timestamp}</span>
-                  <span className="truncate">{rec.id}</span>
-                  <span className={verdict.tone}>
-                    {verdict.text}
-                    {outcome.status === 'RETRIED' && ` (x${outcome.attempts})`}
+                  <span className="num text-xs text-mute">{rec.timestamp.slice(0, 8)}</span>
+                  <Track record={rec} axisMs={axisMs} />
+                  <span className="num text-xs text-right">
+                    <span className={`font-semibold ${rejected ? 'text-blue' : ''}`}>{VERDICT[outcome.status]}</span>
+                    {outcome.status === 'RETRIED' && <span className="text-mute"> x{outcome.attempts}</span>}
+                    <span className="text-mute"> {outcome.totalDurationMs}ms</span>
                   </span>
-                  <span className="text-right tabular-nums">{outcome.totalDurationMs}ms</span>
                 </button>
 
                 {open && (
-                  <div className="px-4 pb-3 pt-1 bg-paper/60 space-y-2">
-                    {outcome.status === 'CIRCUIT_OPEN' && (
-                      <p className="text-ink-soft">Breaker was open, so this never left the client.</p>
-                    )}
-                    {outcome.status === 'RATE_LIMITED' && (
-                      <p className="text-ink-soft">Bucket was empty. Wait for a refill.</p>
-                    )}
-
-                    {outcome.attemptLogs.length > 0 && (
-                      <ol className="border-l border-ink pl-3 space-y-0.5">
-                        {outcome.attemptLogs.map((log, idx) => (
-                          <li key={idx}>
-                            <span className="text-ink-faint">#{log.attemptNumber}</span>{' '}
-                            {log.durationMs}ms{' '}
-                            {log.error ? (
-                              <span className="text-signal">{log.error}</span>
-                            ) : (
-                              <span className="text-ok">ok</span>
-                            )}
-                            {log.backoffDelayMs !== undefined && (
-                              <span className="text-tide"> then waited {log.backoffDelayMs}ms</span>
-                            )}
-                          </li>
-                        ))}
-                      </ol>
-                    )}
-
-                    <p className="text-ink-faint">
-                      {outcome.attempts} attempt{outcome.attempts === 1 ? '' : 's'} · {outcome.totalBackoffDelayMs}ms
-                      backoff · breaker {outcome.circuitState} ·{' '}
+                  <div className="px-4 pb-3 pt-1 num text-xs text-mute space-y-1 bg-page/40">
+                    <p>
+                      {rec.id} · {outcome.status.toLowerCase().replace('_', ' ')} · breaker {outcome.circuitState.toLowerCase()} ·{' '}
                       {outcome.remainingTokens >= 0 ? `${outcome.remainingTokens} tokens left` : 'limiter off'}
                     </p>
+                    {rejected && <p className="text-ink">Never left the client, so nothing to draw.</p>}
+                    {outcome.attemptLogs.map((log) => (
+                      <p key={log.attemptNumber} className="text-ink">
+                        #{log.attemptNumber} {log.durationMs}ms {log.error ?? 'ok'}
+                        {log.backoffDelayMs !== undefined && <span className="text-mute"> → waited {log.backoffDelayMs}ms</span>}
+                      </p>
+                    ))}
                   </div>
                 )}
               </li>
@@ -99,6 +124,6 @@ export const ExecutionLog: React.FC<ExecutionLogProps> = ({ records, onClear }) 
           })}
         </ul>
       )}
-    </div>
+    </section>
   );
 };

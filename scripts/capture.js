@@ -19,15 +19,17 @@ await page.goto('http://localhost:4173', { waitUntil: 'networkidle0' });
 
 await clickByText(page, 'flaky');
 await clickByText(page, 'burst x10');
+await sleep(2000);
+await clickByText(page, 'burst x10');
 await sleep(1500);
-await clickByText(page, 'send one');
+await clickByText(page, 'one request');
 await sleep(800);
 
 // open the first log row so the attempt trace is visible
-await page.evaluate(() => document.querySelector('ul li button')?.click());
+await page.evaluate(() => document.querySelector('[data-row] button')?.click());
 await sleep(300);
 
-const out = path.resolve('docs/assets/workbench.png');
+const out = path.resolve('docs/assets/screenshot.png');
 await page.screenshot({ path: out });
 console.log('saved', out);
 await browser.close();

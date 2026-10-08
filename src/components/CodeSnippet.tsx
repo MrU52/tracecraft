@@ -65,28 +65,24 @@ const { result, attempts, totalBackoffDelayMs } = await RetryExecutor.executeWit
   const code = { pipeline: pipelineCode, circuit: circuitCode, retry: retryCode }[tab];
 
   return (
-    <div className="border border-ink bg-card">
-      <div className="px-4 py-2.5 border-b border-ink flex flex-wrap items-center justify-between gap-2">
-        <h2 className="font-display text-lg font-bold">Using it</h2>
-        <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono text-xs">
+    <section className="border-2 border-ink bg-white">
+      <div className="px-4 py-3 border-b-2 border-ink flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+        <h2 className="text-2xl font-black uppercase leading-none [font-stretch:70%]">Usage</h2>
+        <div className="cap flex flex-wrap gap-x-4 gap-y-1">
           {tabs.map(([key, name]) => (
             <button
               key={key}
               onClick={() => setTab(key)}
-              className={
-                tab === key
-                  ? 'underline decoration-signal decoration-2 underline-offset-4'
-                  : 'text-ink-faint hover:text-ink'
-              }
+              className={tab === key ? 'text-blue underline underline-offset-4 decoration-2' : 'text-mute hover:text-ink'}
             >
               {name}
             </button>
           ))}
         </div>
       </div>
-      <pre className="p-4 bg-ink text-paper text-xs font-mono leading-relaxed overflow-x-auto">
+      <pre className="p-4 bg-ink text-white/90 text-xs font-mono leading-relaxed overflow-x-auto">
         <code>{code}</code>
       </pre>
-    </div>
+    </section>
   );
 };

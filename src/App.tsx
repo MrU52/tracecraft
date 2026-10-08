@@ -157,38 +157,33 @@ export function App() {
     <div className="min-h-screen flex flex-col">
       <Header requestCount={records.length} />
 
-      <main className="flex-1 max-w-6xl w-full mx-auto px-5 py-8 space-y-8">
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] gap-8">
-          <ResilienceCards
-            circuitMetrics={circuitMetrics}
-            tokenStats={tokenStats}
-            retryStats={retryStats}
-            onForceTrip={handleForceTrip}
-            onForceClose={handleForceClose}
-            onResetBreaker={handleResetBreaker}
-          />
+      <main className="flex-1 max-w-6xl w-full mx-auto px-5 py-6 space-y-5">
+        <RequestSimulator
+          config={simConfig}
+          onChangeConfig={setSimConfig}
+          onSendSingle={executeRequest}
+          onSendBurst={handleSendBurst}
+          isAutoTraffic={isAutoTraffic}
+          onToggleAutoTraffic={() => setIsAutoTraffic((prev) => !prev)}
+          isExecuting={isExecuting}
+        />
 
-          <div className="space-y-6">
-            <RequestSimulator
-              config={simConfig}
-              onChangeConfig={setSimConfig}
-              onSendSingle={executeRequest}
-              onSendBurst={handleSendBurst}
-              isAutoTraffic={isAutoTraffic}
-              onToggleAutoTraffic={() => setIsAutoTraffic((prev) => !prev)}
-              isExecuting={isExecuting}
-            />
-            <ExecutionLog records={records} onClear={() => setRecords([])} />
-          </div>
-        </div>
+        <ResilienceCards
+          circuitMetrics={circuitMetrics}
+          tokenStats={tokenStats}
+          retryStats={retryStats}
+          onForceTrip={handleForceTrip}
+          onForceClose={handleForceClose}
+          onResetBreaker={handleResetBreaker}
+        />
+
+        <ExecutionLog records={records} onClear={() => setRecords([])} />
 
         <CodeSnippet />
       </main>
 
-      <footer className="border-t border-rule py-5 px-5 font-mono text-xs text-ink-faint">
-        <div className="max-w-6xl mx-auto">
-          no runtime dependencies in <span className="text-ink-soft">src/core</span>. the UI is react + tailwind.
-        </div>
+      <footer className="px-5 py-5 cap text-mute max-w-6xl w-full mx-auto">
+        src/core has no runtime dependencies
       </footer>
     </div>
   );

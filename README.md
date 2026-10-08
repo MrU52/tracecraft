@@ -4,7 +4,7 @@ A rate limiter, a circuit breaker and a retry loop, written from scratch in Type
 
 I built it to understand how these three things actually behave when they're stacked on top of each other, instead of just importing a library.
 
-![the workbench](./docs/assets/workbench.png)
+![the workbench](./docs/assets/screenshot.png)
 
 ## What's in `src/core/resilience`
 
