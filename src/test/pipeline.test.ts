@@ -1,103 +1,124 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { ResiliencePipeline } from '../core/resilience/pipeline';
-import { CircuitBreaker } from '../core/resilience/circuit-breaker';
+import { CircuitBreaker, CircuitState } from '../core/resilience/circuit-breaker';
 import { TokenBucketRateLimiter } from '../core/resilience/rate-limiter';
 import { JitterStrategy } from '../core/resilience/retry';
 
-describe('ResiliencePipeline Integration', () => {
-  it('executes healthy requests successfully on first attempt', async () => {
+describe('ResiliencePipeline', () => {
+  it('passes a healthy call straight through', async () => {
     const pipeline = new ResiliencePipeline({
-      name: 'payment-gateway',
+      name: 'pay',
       rateLimiter: new TokenBucketRateLimiter({ capacity: 10, refillRatePerSec: 5 }),
-      circuitBreaker: new CircuitBreaker({ name: 'payment-circuit' }),
+      circuitBreaker: new CircuitBreaker({ name: 'pay' }),
       retryPolicy: { maxRetries: 2, baseDelayMs: 10 },
     });
 
-    const res = await pipeline.execute(async () => ({ status: 'PAID', txId: 'tx_123' }));
+    const res = await pipeline.execute(async () => ({ txId: 'tx_123' }));
 
     expect(res.status).toBe('SUCCESS');
-    expect(res.result).toEqual({ status: 'PAID', txId: 'tx_123' });
+    expect(res.result).toEqual({ txId: 'tx_123' });
     expect(res.attempts).toBe(1);
     expect(res.remainingTokens).toBe(9);
   });
 
-  it('rejects calls when rate limiter token bucket is exhausted', async () => {
-    const limiter = new TokenBucketRateLimiter({ capacity: 2, refillRatePerSec: 0.1 });
+  it('answers 429-style once the bucket is empty', async () => {
     const pipeline = new ResiliencePipeline({
-      name: 'limited-api',
-      rateLimiter: limiter,
+      name: 'limited',
+      rateLimiter: new TokenBucketRateLimiter({ capacity: 2, refillRatePerSec: 0.1 }),
     });
 
-    // 2 allowed
     await pipeline.execute(async () => 'ok');
     await pipeline.execute(async () => 'ok');
 
-    // 3rd rejected by rate limiter
-    const res = await pipeline.execute(async () => 'should_not_run');
+    const op = vi.fn(async () => 'nope');
+    const res = await pipeline.execute(op);
+
     expect(res.status).toBe('RATE_LIMITED');
-    expect(res.error?.message).toContain('Rate limit exceeded');
+    expect(res.error?.message).toMatch(/Rate limit/);
+    expect(op).not.toHaveBeenCalled();
   });
 
-  it('fast-fails immediately without running operation when circuit is OPEN', async () => {
-    const breaker = new CircuitBreaker({ name: 'test-circuit' });
+  it('skips the call entirely while the breaker is open', async () => {
+    const breaker = new CircuitBreaker({ name: 'broken' });
     breaker.forceOpen();
+    const pipeline = new ResiliencePipeline({ name: 'broken', circuitBreaker: breaker });
 
-    let operationCalled = false;
-    const pipeline = new ResiliencePipeline({
-      name: 'broken-api',
-      circuitBreaker: breaker,
-    });
+    const op = vi.fn(async () => 'val');
+    const res = await pipeline.execute(op);
 
-    const res = await pipeline.execute(async () => {
-      operationCalled = true;
-      return 'val';
-    });
-
-    expect(operationCalled).toBe(false);
+    expect(op).not.toHaveBeenCalled();
     expect(res.status).toBe('CIRCUIT_OPEN');
-    expect(res.error?.message).toContain("is OPEN - request rejected");
+    expect(res.circuitState).toBe(CircuitState.OPEN);
+    expect(res.error?.message).toMatch(/is OPEN/);
   });
 
-  it('retries transient failures and marks outcome as RETRIED', async () => {
-    let attempts = 0;
+  it('retries a flaky call and reports RETRIED', async () => {
+    let calls = 0;
     const pipeline = new ResiliencePipeline({
-      name: 'flaky-service',
-      retryPolicy: {
-        maxRetries: 3,
-        baseDelayMs: 5,
-        maxDelayMs: 20,
-        jitter: JitterStrategy.NONE,
-      },
+      name: 'flaky',
+      retryPolicy: { maxRetries: 3, baseDelayMs: 5, maxDelayMs: 20, jitter: JitterStrategy.NONE },
     });
 
     const res = await pipeline.execute(async () => {
-      attempts++;
-      if (attempts < 3) {
-        throw new Error('Connection timeout 504');
-      }
+      if (++calls < 3) throw new Error('504');
       return 'recovered';
     });
 
     expect(res.status).toBe('RETRIED');
-    expect(res.attempts).toBe(3);
     expect(res.result).toBe('recovered');
-    expect(res.totalBackoffDelayMs).toBeGreaterThanOrEqual(15);
+    expect(res.attempts).toBe(3);
+    expect(res.totalBackoffDelayMs).toBe(15);
+    expect(res.attemptLogs.map((l) => l.backoffDelayMs)).toEqual([5, 10, undefined]);
   });
 
-  it('uses fallback response when primary call fails completely', async () => {
+  it('hands back the fallback value when every attempt fails', async () => {
     const pipeline = new ResiliencePipeline({
-      name: 'failing-service',
+      name: 'failing',
       retryPolicy: { maxRetries: 1, baseDelayMs: 5 },
     });
 
     const res = await pipeline.execute(
       async () => {
-        throw new Error('Downstream 500 error');
+        throw new Error('500');
       },
-      () => ({ cached: true, offlineData: [1, 2, 3] })
+      () => ({ cached: true })
     );
 
     expect(res.status).toBe('FAILED');
-    expect(res.result).toEqual({ cached: true, offlineData: [1, 2, 3] });
+    expect(res.result).toEqual({ cached: true });
+    expect(res.error?.message).toBe('500');
+    expect(res.attempts).toBe(2);
+  });
+
+  it('reports the original error if the fallback throws too', async () => {
+    const pipeline = new ResiliencePipeline({ name: 'f', retryPolicy: { maxRetries: 0 } });
+
+    const res = await pipeline.execute(
+      async () => {
+        throw new Error('primary');
+      },
+      () => {
+        throw new Error('fallback');
+      }
+    );
+
+    expect(res.status).toBe('FAILED');
+    expect(res.result).toBeUndefined();
+    expect(res.error?.message).toBe('primary');
+  });
+
+  it('counts one pipeline call as one breaker outcome, however many retries it took', async () => {
+    const breaker = new CircuitBreaker({ name: 'b' });
+    const pipeline = new ResiliencePipeline({
+      name: 'b',
+      circuitBreaker: breaker,
+      retryPolicy: { maxRetries: 2, baseDelayMs: 1, maxDelayMs: 2 },
+    });
+
+    await pipeline.execute(async () => {
+      throw new Error('x');
+    });
+
+    expect(breaker.getMetrics().totalCalls).toBe(1);
   });
 });

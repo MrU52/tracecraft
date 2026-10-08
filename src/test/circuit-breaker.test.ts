@@ -1,12 +1,16 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CircuitBreaker, CircuitState } from '../core/resilience/circuit-breaker';
 
-describe('CircuitBreaker Finite State Machine', () => {
+const boom = async () => {
+  throw new Error('boom');
+};
+
+describe('CircuitBreaker', () => {
   let breaker: CircuitBreaker;
 
   beforeEach(() => {
     breaker = new CircuitBreaker({
-      name: 'test-breaker',
+      name: 'test',
       slidingWindowSize: 5,
       failureRateThreshold: 50,
       waitDurationInOpenStateMs: 500,
@@ -14,77 +18,92 @@ describe('CircuitBreaker Finite State Machine', () => {
     });
   });
 
-  it('starts in CLOSED state with 0% failure rate', () => {
-    expect(breaker.getState()).toBe(CircuitState.CLOSED);
-    const metrics = breaker.getMetrics();
-    expect(metrics.state).toBe(CircuitState.CLOSED);
-    expect(metrics.failureRatePercent).toBe(0);
-    expect(metrics.totalCalls).toBe(0);
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
-  it('remains CLOSED on successful calls', async () => {
+  it('starts closed with nothing recorded', () => {
+    const m = breaker.getMetrics();
+    expect(m.state).toBe(CircuitState.CLOSED);
+    expect(m.failureRatePercent).toBe(0);
+    expect(m.totalCalls).toBe(0);
+  });
+
+  it('stays closed while calls succeed', async () => {
     for (let i = 0; i < 5; i++) {
-      const res = await breaker.execute(async () => 'ok');
-      expect(res).toBe('ok');
+      expect(await breaker.execute(async () => 'ok')).toBe('ok');
     }
     expect(breaker.getState()).toBe(CircuitState.CLOSED);
     expect(breaker.getMetrics().successfulCalls).toBe(5);
   });
 
-  it('trips to OPEN state when failure rate threshold is exceeded', async () => {
-    const stateChanges: CircuitState[] = [];
-    breaker.onStateChange((from, to) => stateChanges.push(to));
+  it('opens once the failure rate passes the threshold', async () => {
+    const seen: CircuitState[] = [];
+    breaker.onStateChange((_from, to) => seen.push(to));
 
-    // Fail 3 out of 5 calls (60% failure rate > 50% threshold)
     for (let i = 0; i < 3; i++) {
-      try {
-        await breaker.execute(async () => {
-          throw new Error('Downstream boom');
-        });
-      } catch {
-        // Expected
-      }
+      await breaker.execute(boom).catch(() => {});
     }
 
     expect(breaker.getState()).toBe(CircuitState.OPEN);
-    expect(stateChanges).toContain(CircuitState.OPEN);
+    expect(seen).toEqual([CircuitState.OPEN]);
   });
 
-  it('fails fast or invokes fallback when in OPEN state', async () => {
+  it('does not judge on fewer than three samples', async () => {
+    await breaker.execute(boom).catch(() => {});
+    await breaker.execute(boom).catch(() => {});
+    expect(breaker.getState()).toBe(CircuitState.CLOSED);
+  });
+
+  it('uses the fallback instead of calling through when open', async () => {
     breaker.forceOpen();
+    const action = vi.fn(async () => 'primary');
 
-    let fallbackCalled = false;
-    const result = await breaker.execute(
-      async () => 'primary',
-      async () => {
-        fallbackCalled = true;
-        return 'fallback_value';
-      }
-    );
+    const result = await breaker.execute(action, () => 'fallback');
 
-    expect(fallbackCalled).toBe(true);
-    expect(result).toBe('fallback_value');
+    expect(result).toBe('fallback');
+    expect(action).not.toHaveBeenCalled();
     expect(breaker.getMetrics().fallbackCount).toBe(1);
   });
 
-  it('transitions to HALF_OPEN after timeout and recovers to CLOSED if probes succeed', async () => {
-    vi.useFakeTimers();
-
+  it('throws when open and there is no fallback', async () => {
     breaker.forceOpen();
-    expect(breaker.getState()).toBe(CircuitState.OPEN);
+    await expect(breaker.execute(async () => 'x')).rejects.toThrow(/OPEN/);
+  });
 
-    // Fast-forward past waitDurationInOpenStateMs (500ms)
+  it('goes half-open after the wait and closes again once enough probes pass', async () => {
+    vi.useFakeTimers();
+    breaker.forceOpen();
+
     vi.advanceTimersByTime(550);
     expect(breaker.getState()).toBe(CircuitState.HALF_OPEN);
 
-    // Send 2 successful probes (permittedCallsInHalfOpen = 2)
-    await breaker.execute(async () => 'probe-1');
+    await breaker.execute(async () => 'probe');
     expect(breaker.getState()).toBe(CircuitState.HALF_OPEN);
-
-    await breaker.execute(async () => 'probe-2');
-    // Now it should have healed and recovered to CLOSED!
+    await breaker.execute(async () => 'probe');
     expect(breaker.getState()).toBe(CircuitState.CLOSED);
+  });
 
-    vi.useRealTimers();
+  it('reopens if a probe fails', async () => {
+    vi.useFakeTimers();
+    breaker.forceOpen();
+    vi.advanceTimersByTime(550);
+
+    await breaker.execute(boom).catch(() => {});
+
+    expect(breaker.getState()).toBe(CircuitState.OPEN);
+    expect(breaker.getMetrics().trippedCount).toBe(2);
+  });
+
+  it('turns away extra callers while probes are in flight', async () => {
+    vi.useFakeTimers();
+    breaker.forceOpen();
+    vi.advanceTimersByTime(550);
+
+    const never = new Promise<string>(() => {});
+    void breaker.execute(() => never);
+    void breaker.execute(() => never);
+
+    await expect(breaker.execute(async () => 'third')).rejects.toThrow(/probing limit/);
   });
 });

@@ -1,96 +1,111 @@
 import { describe, it, expect, vi } from 'vitest';
-import { RetryExecutor, JitterStrategy } from '../core/resilience/retry';
+import { RetryExecutor, JitterStrategy, RetryPolicy } from '../core/resilience/retry';
 
-describe('RetryExecutor', () => {
-  it('returns immediately on successful first attempt', async () => {
-    let callCount = 0;
-    const res = await RetryExecutor.executeWithRetry(async () => {
-      callCount++;
-      return 'ok';
-    });
+const policy = (jitter: JitterStrategy): RetryPolicy => ({
+  maxRetries: 3,
+  baseDelayMs: 100,
+  maxDelayMs: 1000,
+  jitter,
+});
 
-    expect(callCount).toBe(1);
-    expect(res.result).toBe('ok');
-    expect(res.attempts).toBe(1);
-    expect(res.totalBackoffDelayMs).toBe(0);
+describe('RetryExecutor.executeWithRetry', () => {
+  it('returns straight away when the first try works', async () => {
+    const op = vi.fn(async () => 'ok');
+    const res = await RetryExecutor.executeWithRetry(op);
+
+    expect(op).toHaveBeenCalledTimes(1);
+    expect(res).toEqual({ result: 'ok', attempts: 1, totalBackoffDelayMs: 0 });
   });
 
-  it('retries on failure and succeeds on 2nd attempt', async () => {
-    let callCount = 0;
+  it('retries and returns the later success', async () => {
+    let calls = 0;
     const res = await RetryExecutor.executeWithRetry(
       async () => {
-        callCount++;
-        if (callCount < 2) {
-          throw new Error('Transient 503 error');
-        }
+        if (++calls < 2) throw new Error('503');
         return 'healed';
       },
-      {
-        maxRetries: 3,
-        baseDelayMs: 10,
-        maxDelayMs: 50,
-        jitter: JitterStrategy.NONE,
-      }
+      { baseDelayMs: 10, maxDelayMs: 50, jitter: JitterStrategy.NONE }
     );
 
-    expect(callCount).toBe(2);
     expect(res.result).toBe('healed');
     expect(res.attempts).toBe(2);
-    expect(res.totalBackoffDelayMs).toBeGreaterThanOrEqual(10);
+    expect(res.totalBackoffDelayMs).toBe(10);
   });
 
-  it('throws error when all retry attempts are exhausted', async () => {
-    let callCount = 0;
-    await expect(
-      RetryExecutor.executeWithRetry(
-        async () => {
-          callCount++;
-          throw new Error('Persistent failure');
-        },
-        {
-          maxRetries: 2,
-          baseDelayMs: 5,
-          maxDelayMs: 20,
-        }
-      )
-    ).rejects.toThrow('Persistent failure');
-
-    // Initial attempt + 2 retries = 3 total attempts
-    expect(callCount).toBe(3);
-  });
-
-  it('stops immediately if error is not retryable (e.g. 400 Bad Request)', async () => {
-    let callCount = 0;
-    class BadRequestError extends Error {}
+  it('makes 1 + maxRetries attempts, then rethrows the last error', async () => {
+    const op = vi.fn(async () => {
+      throw new Error('still down');
+    });
 
     await expect(
-      RetryExecutor.executeWithRetry(
-        async () => {
-          callCount++;
-          throw new BadRequestError('Invalid input payload');
-        },
-        {
-          maxRetries: 3,
-          retryableErrors: err => !(err instanceof BadRequestError),
-        }
-      )
-    ).rejects.toThrow('Invalid input payload');
-
-    expect(callCount).toBe(1);
+      RetryExecutor.executeWithRetry(op, { maxRetries: 2, baseDelayMs: 1, maxDelayMs: 5 })
+    ).rejects.toThrow('still down');
+    expect(op).toHaveBeenCalledTimes(3);
   });
 
-  it('calculates deterministic exponential backoff when jitter is NONE', () => {
-    const policy = {
-      maxRetries: 3,
-      baseDelayMs: 100,
-      maxDelayMs: 1000,
-      jitter: JitterStrategy.NONE,
-    };
+  it('does not retry errors that retryableErrors rejects', async () => {
+    class BadRequest extends Error {}
+    const op = vi.fn(async () => {
+      throw new BadRequest('bad input');
+    });
 
-    expect(RetryExecutor.calculateDelay(0, policy)).toBe(100);  // 100 * 2^0
-    expect(RetryExecutor.calculateDelay(1, policy)).toBe(200);  // 100 * 2^1
-    expect(RetryExecutor.calculateDelay(2, policy)).toBe(400);  // 100 * 2^2
-    expect(RetryExecutor.calculateDelay(3, policy)).toBe(800);  // 100 * 2^3
-    expect(RetryExecutor.calculateDelay(4, policy)).toBe(1000); // capped at maxDelayMs
+    await expect(
+      RetryExecutor.executeWithRetry(op, { retryableErrors: (e) => !(e instanceof BadRequest) })
+    ).rejects.toThrow('bad input');
+    expect(op).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports every attempt to onAttempt, with the delay on the ones that retried', async () => {
+    const seen: { attempt: number; failed: boolean; delay?: number }[] = [];
+    let calls = 0;
+
+    await RetryExecutor.executeWithRetry(
+      async () => {
+        if (++calls < 3) throw new Error('nope');
+      },
+      { baseDelayMs: 1, maxDelayMs: 4, jitter: JitterStrategy.NONE },
+      (i) => seen.push({ attempt: i.attempt, failed: i.error !== undefined, delay: i.delayMs })
+    );
+
+    expect(seen).toEqual([
+      { attempt: 0, failed: true, delay: 1 },
+      { attempt: 1, failed: true, delay: 2 },
+      { attempt: 2, failed: false, delay: undefined },
+    ]);
+  });
+});
+
+describe('RetryExecutor.calculateDelay', () => {
+  it('doubles each attempt and stops at maxDelayMs with no jitter', () => {
+    const p = policy(JitterStrategy.NONE);
+    expect([0, 1, 2, 3, 4].map((a) => RetryExecutor.calculateDelay(a, p))).toEqual([100, 200, 400, 800, 1000]);
+  });
+
+  it('full jitter stays between 0 and the exponential ceiling', () => {
+    const p = policy(JitterStrategy.FULL);
+    for (let i = 0; i < 500; i++) {
+      const d = RetryExecutor.calculateDelay(2, p);
+      expect(d).toBeGreaterThanOrEqual(0);
+      expect(d).toBeLessThanOrEqual(400);
+    }
+  });
+
+  it('equal jitter stays in the top half of the ceiling', () => {
+    const p = policy(JitterStrategy.EQUAL);
+    for (let i = 0; i < 500; i++) {
+      const d = RetryExecutor.calculateDelay(2, p);
+      expect(d).toBeGreaterThanOrEqual(200);
+      expect(d).toBeLessThanOrEqual(400);
+    }
+  });
+
+  it('decorrelated jitter respects base and cap', () => {
+    const p = policy(JitterStrategy.DECORRELATED);
+    let prev = 0;
+    for (let i = 0; i < 500; i++) {
+      prev = RetryExecutor.calculateDelay(i % 5, p, prev);
+      expect(prev).toBeGreaterThanOrEqual(100);
+      expect(prev).toBeLessThanOrEqual(1000);
+    }
   });
 });
