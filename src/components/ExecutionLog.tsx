@@ -13,163 +13,91 @@ interface ExecutionLogProps {
   onClear: () => void;
 }
 
+const VERDICT: Record<string, { text: string; tone: string }> = {
+  SUCCESS: { text: '200', tone: 'text-ok' },
+  RETRIED: { text: '200 after retry', tone: 'text-tide' },
+  RATE_LIMITED: { text: '429', tone: 'text-warn' },
+  CIRCUIT_OPEN: { text: '503 short-circuit', tone: 'text-signal' },
+  FAILED: { text: '500 gave up', tone: 'text-signal' },
+};
+
 export const ExecutionLog: React.FC<ExecutionLogProps> = ({ records, onClear }) => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const toggleExpand = (id: string) => {
-    setExpandedId((prev) => (prev === id ? null : id));
-  };
-
   return (
-    <div className="glass-panel rounded-xl p-5 border border-surface-border">
-      <div className="flex items-center justify-between mb-4 pb-3 border-b border-surface-border/50">
-        <div>
-          <h2 className="text-sm font-bold font-mono text-white tracking-tight uppercase">
-            Live Execution Feed &amp; Waterfall
-          </h2>
-          <p className="text-xs text-slate-400">
-            Real-time telemetry showing retries, backoff delays, and circuit fast-fails
-          </p>
-        </div>
-        <button
-          onClick={onClear}
-          className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs font-mono text-slate-400 transition-colors border border-slate-700"
-        >
-          Clear Feed
+    <div className="border border-ink bg-card">
+      <div className="px-4 py-2.5 border-b border-ink flex items-center justify-between">
+        <h2 className="font-display text-lg font-bold">Request log</h2>
+        <button onClick={onClear} className="label hover:text-signal">
+          clear
         </button>
       </div>
 
       {records.length === 0 ? (
-        <div className="text-center py-12 text-slate-500 font-mono text-xs border border-dashed border-slate-800 rounded-lg">
-          No requests sent yet. Click &quot;Send 1 Request&quot; or &quot;Burst 10 Reqs&quot; above to watch resilience layers execute.
-        </div>
+        <p className="px-4 py-10 text-center font-mono text-xs text-ink-faint">
+          nothing yet. send a request and it shows up here.
+        </p>
       ) : (
-        <div className="space-y-2.5 max-h-[460px] overflow-y-auto pr-1">
+        <ul className="max-h-[440px] overflow-y-auto divide-y divide-rule font-mono text-xs">
           {records.map((rec) => {
             const { outcome } = rec;
-            const isSuccess = outcome.status === 'SUCCESS';
-            const isRetried = outcome.status === 'RETRIED';
-            const isRateLimited = outcome.status === 'RATE_LIMITED';
-            const isCircuitOpen = outcome.status === 'CIRCUIT_OPEN';
-            const isFailed = outcome.status === 'FAILED';
-
-            const isExpanded = expandedId === rec.id;
+            const verdict = VERDICT[outcome.status] ?? { text: outcome.status, tone: '' };
+            const open = expandedId === rec.id;
 
             return (
-              <div
-                key={rec.id}
-                className="bg-surface-elevated/70 border border-surface-border/60 hover:border-slate-600 rounded-lg p-3 text-xs font-mono transition-all"
-              >
-                <div
-                  className="flex items-center justify-between cursor-pointer select-none"
-                  onClick={() => toggleExpand(rec.id)}
+              <li key={rec.id}>
+                <button
+                  onClick={() => setExpandedId(open ? null : rec.id)}
+                  className="w-full grid grid-cols-[88px_1fr_auto_56px] items-center gap-3 px-4 py-2 text-left hover:bg-paper"
                 >
-                  <div className="flex items-center gap-3">
-                    <span className="text-slate-500 text-[11px]">{rec.timestamp}</span>
-                    <span className="text-slate-300 font-semibold">{rec.id}</span>
-                    <span className="text-slate-400 text-[11px] hidden sm:inline">{rec.endpoint}</span>
-                  </div>
+                  <span className="text-ink-faint">{rec.timestamp}</span>
+                  <span className="truncate">{rec.id}</span>
+                  <span className={verdict.tone}>
+                    {verdict.text}
+                    {outcome.status === 'RETRIED' && ` (x${outcome.attempts})`}
+                  </span>
+                  <span className="text-right tabular-nums">{outcome.totalDurationMs}ms</span>
+                </button>
 
-                  <div className="flex items-center gap-3">
-                    {/* Status Badge */}
-                    {isSuccess && (
-                      <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-bold">
-                        200 OK
-                      </span>
+                {open && (
+                  <div className="px-4 pb-3 pt-1 bg-paper/60 space-y-2">
+                    {outcome.status === 'CIRCUIT_OPEN' && (
+                      <p className="text-ink-soft">Breaker was open, so this never left the client.</p>
                     )}
-                    {isRetried && (
-                      <span className="px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 font-bold">
-                        200 OK (Retried x{outcome.attempts})
-                      </span>
-                    )}
-                    {isRateLimited && (
-                      <span className="px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 font-bold">
-                        429 Too Many Requests
-                      </span>
-                    )}
-                    {isCircuitOpen && (
-                      <span className="px-2 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/30 font-bold">
-                        503 Circuit OPEN (0ms)
-                      </span>
-                    )}
-                    {isFailed && (
-                      <span className="px-2 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/30 font-bold">
-                        500 Failed (Exhausted)
-                      </span>
-                    )}
-
-                    {/* Total Duration */}
-                    <span
-                      className={`font-semibold ${
-                        isCircuitOpen
-                          ? 'text-accent-emerald font-bold'
-                          : outcome.totalDurationMs > 400
-                          ? 'text-amber-400'
-                          : 'text-slate-200'
-                      }`}
-                    >
-                      {outcome.totalDurationMs}ms
-                    </span>
-
-                    <span className="text-slate-500 text-xs">
-                      {isExpanded ? '▲' : '▼'}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Expanded Details / Waterfall Breakdown */}
-                {isExpanded && (
-                  <div className="mt-3 pt-3 border-t border-surface-border/50 text-[11px] space-y-2">
-                    {isCircuitOpen && (
-                      <div className="p-2 rounded bg-rose-950/20 border border-rose-900/40 text-rose-300">
-                        ⚡ <strong>Fast-Fail Protected:</strong> Circuit Breaker intercepted this request in 0ms without contacting downstream server, saving server load and eliminating latency.
-                      </div>
-                    )}
-
-                    {isRateLimited && (
-                      <div className="p-2 rounded bg-amber-950/20 border border-amber-900/40 text-amber-300">
-                        🛑 <strong>Rate Limit Throttled:</strong> Token bucket had 0 tokens remaining. Client throttled until tokens refill (+2/s).
-                      </div>
+                    {outcome.status === 'RATE_LIMITED' && (
+                      <p className="text-ink-soft">Bucket was empty. Wait for a refill.</p>
                     )}
 
                     {outcome.attemptLogs.length > 0 && (
-                      <div>
-                        <div className="text-slate-400 font-semibold mb-1.5 uppercase tracking-wider text-[10px]">
-                          Attempt Breakdown:
-                        </div>
-                        <div className="space-y-1 pl-2 border-l-2 border-primary-500/40">
-                          {outcome.attemptLogs.map((log, idx) => (
-                            <div key={idx} className="flex items-center gap-2 text-slate-300">
-                              <span className="text-primary-400 font-bold">#{log.attemptNumber}</span>
-                              <span>Duration: {log.durationMs}ms</span>
-                              {log.error ? (
-                                <span className="text-rose-400 font-mono">({log.error})</span>
-                              ) : (
-                                <span className="text-emerald-400 font-mono">(&#x2713; HTTP 200 OK)</span>
-                              )}
-                              {log.backoffDelayMs !== undefined && (
-                                <span className="text-cyan-400 font-mono text-[10px]">
-                                  &rarr; Exponential Backoff Jitter: {log.backoffDelayMs}ms
-                                </span>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
+                      <ol className="border-l border-ink pl-3 space-y-0.5">
+                        {outcome.attemptLogs.map((log, idx) => (
+                          <li key={idx}>
+                            <span className="text-ink-faint">#{log.attemptNumber}</span>{' '}
+                            {log.durationMs}ms{' '}
+                            {log.error ? (
+                              <span className="text-signal">{log.error}</span>
+                            ) : (
+                              <span className="text-ok">ok</span>
+                            )}
+                            {log.backoffDelayMs !== undefined && (
+                              <span className="text-tide"> then waited {log.backoffDelayMs}ms</span>
+                            )}
+                          </li>
+                        ))}
+                      </ol>
                     )}
 
-                    <div className="flex flex-wrap gap-4 text-slate-400 pt-1 text-[10px]">
-                      <span>Attempts: {outcome.attempts}</span>
-                      <span>Total Backoff: {outcome.totalBackoffDelayMs}ms</span>
-                      <span>Circuit State: {outcome.circuitState}</span>
-                      <span>Remaining Tokens: {outcome.remainingTokens >= 0 ? outcome.remainingTokens : 'N/A'}</span>
-                    </div>
+                    <p className="text-ink-faint">
+                      {outcome.attempts} attempt{outcome.attempts === 1 ? '' : 's'} · {outcome.totalBackoffDelayMs}ms
+                      backoff · breaker {outcome.circuitState} ·{' '}
+                      {outcome.remainingTokens >= 0 ? `${outcome.remainingTokens} tokens left` : 'limiter off'}
+                    </p>
                   </div>
                 )}
-              </div>
+              </li>
             );
           })}
-        </div>
+        </ul>
       )}
     </div>
   );

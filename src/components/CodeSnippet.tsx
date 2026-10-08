@@ -60,60 +60,37 @@ const { result, attempts, totalBackoffDelayMs } = await RetryExecutor.executeWit
   }
 );`;
 
-  return (
-    <div className="glass-panel rounded-xl p-5 border border-surface-border">
-      <div className="flex items-center justify-between mb-4 pb-3 border-b border-surface-border/50">
-        <div>
-          <h2 className="text-sm font-bold font-mono text-white tracking-tight uppercase">
-            Developer Integration Example
-          </h2>
-          <p className="text-xs text-slate-400">
-            How to use these modules in any Node.js or TypeScript application
-          </p>
-        </div>
-        <div className="flex gap-1.5">
-          <button
-            onClick={() => setTab('pipeline')}
-            className={`px-3 py-1 rounded text-xs font-mono transition-all ${
-              tab === 'pipeline'
-                ? 'bg-primary-500/20 text-primary-400 border border-primary-500/40 font-bold'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            ResiliencePipeline
-          </button>
-          <button
-            onClick={() => setTab('circuit')}
-            className={`px-3 py-1 rounded text-xs font-mono transition-all ${
-              tab === 'circuit'
-                ? 'bg-primary-500/20 text-primary-400 border border-primary-500/40 font-bold'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            CircuitBreaker
-          </button>
-          <button
-            onClick={() => setTab('retry')}
-            className={`px-3 py-1 rounded text-xs font-mono transition-all ${
-              tab === 'retry'
-                ? 'bg-primary-500/20 text-primary-400 border border-primary-500/40 font-bold'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            RetryExecutor
-          </button>
-        </div>
-      </div>
+  const tabs = [
+    ['pipeline', 'ResiliencePipeline'],
+    ['circuit', 'CircuitBreaker'],
+    ['retry', 'RetryExecutor'],
+  ] as const;
 
-      <div className="relative">
-        <pre className="p-4 rounded-lg bg-surface-elevated/80 border border-surface-border text-xs font-mono text-slate-200 overflow-x-auto leading-relaxed">
-          <code>
-            {tab === 'pipeline' && pipelineCode}
-            {tab === 'circuit' && circuitCode}
-            {tab === 'retry' && retryCode}
-          </code>
-        </pre>
+  const code = { pipeline: pipelineCode, circuit: circuitCode, retry: retryCode }[tab];
+
+  return (
+    <div className="border border-ink bg-card">
+      <div className="px-4 py-2.5 border-b border-ink flex flex-wrap items-center justify-between gap-2">
+        <h2 className="font-display text-lg font-bold">Using it</h2>
+        <div className="flex gap-4 font-mono text-xs">
+          {tabs.map(([key, name]) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={
+                tab === key
+                  ? 'underline decoration-signal decoration-2 underline-offset-4'
+                  : 'text-ink-faint hover:text-ink'
+              }
+            >
+              {name}
+            </button>
+          ))}
+        </div>
       </div>
+      <pre className="p-4 bg-ink text-paper text-xs font-mono leading-relaxed overflow-x-auto">
+        <code>{code}</code>
+      </pre>
     </div>
   );
 };

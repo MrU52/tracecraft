@@ -9,7 +9,6 @@ import { ResilienceCards } from './components/ResilienceCards';
 import { RequestSimulator, SimulatorConfig } from './components/RequestSimulator';
 import { ExecutionLog, RequestRecord } from './components/ExecutionLog';
 import { CodeSnippet } from './components/CodeSnippet';
-import { InterviewGuideModal } from './components/InterviewGuideModal';
 
 export function App() {
   // Core resilience instances
@@ -49,7 +48,6 @@ export function App() {
   const [records, setRecords] = useState<RequestRecord[]>([]);
   const [isExecuting, setIsExecuting] = useState(false);
   const [isAutoTraffic, setIsAutoTraffic] = useState(false);
-  const [isGuideOpen, setIsGuideOpen] = useState(false);
 
   // Periodically refresh stats (for continuous token refill and circuit breaker timers)
   useEffect(() => {
@@ -168,28 +166,21 @@ export function App() {
   };
 
   return (
-    <div className="min-h-screen bg-background text-slate-100 flex flex-col font-sans selection:bg-primary-500 selection:text-white">
-      {/* Top Header */}
-      <Header
-        onOpenInterviewGuide={() => setIsGuideOpen(true)}
-        requestCount={records.length}
-      />
+    <div className="min-h-screen flex flex-col">
+      <Header requestCount={records.length} />
 
-      {/* Main Studio Workbench */}
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 space-y-6">
-        {/* Row 1: The 3 Core Resilience Pattern Cards */}
-        <ResilienceCards
-          circuitMetrics={circuitMetrics}
-          tokenStats={tokenStats}
-          retryStats={retryStats}
-          onForceTrip={handleForceTrip}
-          onForceClose={handleForceClose}
-          onResetBreaker={handleResetBreaker}
-        />
+      <main className="flex-1 max-w-6xl w-full mx-auto px-5 py-8 space-y-8">
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] gap-8">
+          <ResilienceCards
+            circuitMetrics={circuitMetrics}
+            tokenStats={tokenStats}
+            retryStats={retryStats}
+            onForceTrip={handleForceTrip}
+            onForceClose={handleForceClose}
+            onResetBreaker={handleResetBreaker}
+          />
 
-        {/* Row 2: Upstream Simulator & Live Execution Feed */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          <div className="lg:col-span-6">
+          <div className="space-y-6">
             <RequestSimulator
               config={simConfig}
               onChangeConfig={setSimConfig}
@@ -199,45 +190,18 @@ export function App() {
               onToggleAutoTraffic={() => setIsAutoTraffic((prev) => !prev)}
               isExecuting={isExecuting}
             />
-          </div>
-
-          <div className="lg:col-span-6">
-            <ExecutionLog
-              records={records}
-              onClear={() => setRecords([])}
-            />
+            <ExecutionLog records={records} onClear={() => setRecords([])} />
           </div>
         </div>
 
-        {/* Row 3: Developer Code Snippets */}
         <CodeSnippet />
       </main>
 
-      {/* Footer */}
-      <footer className="border-t border-surface-border bg-surface/50 py-6 px-6 mt-12 text-center text-xs text-slate-500 font-mono">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div>
-            Pure <strong>TypeScript</strong>, <strong>Zero External Runtime Dependencies</strong>, <strong>React 19</strong>, <strong>Tailwind CSS</strong>, <strong>Vitest</strong>.
-          </div>
-          <div className="text-slate-400">
-            Open-source Software Engineering Portfolio Project by{' '}
-            <a
-              href="https://github.com/MrU52"
-              target="_blank"
-              rel="noreferrer"
-              className="text-primary-400 hover:underline font-semibold"
-            >
-              @MrU52
-            </a>
-          </div>
+      <footer className="border-t border-rule py-5 px-5 font-mono text-xs text-ink-faint">
+        <div className="max-w-6xl mx-auto">
+          no runtime dependencies in <span className="text-ink-soft">src/core</span>. the UI is react + tailwind.
         </div>
       </footer>
-
-      {/* Interview Prep Guide Modal */}
-      <InterviewGuideModal
-        isOpen={isGuideOpen}
-        onClose={() => setIsGuideOpen(false)}
-      />
     </div>
   );
 }
