@@ -30,9 +30,9 @@ const Stage: React.FC<{
     <div className="absolute left-0 top-0 w-8 h-8 rounded-full border border-ink bg-card flex items-center justify-center font-mono text-xs">
       {n}
     </div>
-    <div className="flex items-baseline justify-between gap-3 border-b border-rule pb-1.5 mb-3">
+    <div className="flex flex-wrap items-baseline justify-between gap-x-3 border-b border-rule pb-1.5 mb-3">
       <h3 className="font-display text-xl font-bold">{title}</h3>
-      <span className="label">{tag}</span>
+      <span className="label text-right">{tag}</span>
     </div>
     {children}
     <p className="mt-3 text-[13px] leading-snug text-ink-soft max-w-prose">{note}</p>
@@ -64,7 +64,7 @@ export const ResilienceCards: React.FC<ResilienceCardsProps> = ({
     'font-mono text-[11px] px-2.5 py-1 border border-ink hover:bg-ink hover:text-card transition-colors';
 
   return (
-    <div className="relative">
+    <div className="relative self-start">
       {/* the spine connecting the three stages */}
       <div className="absolute left-4 top-8 bottom-4 w-px bg-ink/40" aria-hidden />
 
