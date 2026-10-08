@@ -1,19 +1,16 @@
-/**
- * Rate Limiting algorithms for high-throughput distributed systems:
- * 1. Token Bucket (with burst allowance & continuous time-delta refill)
- * 2. Sliding Window Log / Counter
- */
+// Token bucket. Tokens are topped up lazily from the elapsed time whenever
+// the bucket is touched, so there's no timer and no per-request history.
 
 export interface TokenBucketConfig {
-  capacity: number;       // Maximum burst capacity
-  refillRatePerSec: number; // Tokens added per second
+  capacity: number;
+  refillRatePerSec: number;
 }
 
 export class TokenBucketRateLimiter {
   private capacity: number;
   private refillRate: number;
   private tokens: number;
-  private lastRefillTimestamp: number;
+  private lastRefill = Date.now();
   private totalRejected = 0;
   private totalAccepted = 0;
 
@@ -21,46 +18,34 @@ export class TokenBucketRateLimiter {
     this.capacity = config.capacity;
     this.refillRate = config.refillRatePerSec;
     this.tokens = config.capacity;
-    this.lastRefillTimestamp = Date.now();
   }
 
-  /**
-   * Refills tokens based on elapsed time since last refill calculation.
-   * Continuous time formulation: T = min(capacity, T + deltaSeconds * refillRate)
-   */
   private refill(): void {
     const now = Date.now();
-    const elapsedSeconds = (now - this.lastRefillTimestamp) / 1000;
-    if (elapsedSeconds > 0) {
-      const addedTokens = elapsedSeconds * this.refillRate;
-      this.tokens = Math.min(this.capacity, this.tokens + addedTokens);
-      this.lastRefillTimestamp = now;
+    const elapsedSec = (now - this.lastRefill) / 1000;
+    if (elapsedSec > 0) {
+      this.tokens = Math.min(this.capacity, this.tokens + elapsedSec * this.refillRate);
+      this.lastRefill = now;
     }
   }
 
-  /**
-   * Attempts to consume specified number of tokens.
-   * Returns true if request is permitted, false if rate limited.
-   */
-  public tryAcquire(tokensRequested = 1): boolean {
+  tryAcquire(n = 1): boolean {
     this.refill();
-
-    if (this.tokens >= tokensRequested) {
-      this.tokens -= tokensRequested;
+    if (this.tokens >= n) {
+      this.tokens -= n;
       this.totalAccepted++;
       return true;
     }
-
     this.totalRejected++;
     return false;
   }
 
-  public getAvailableTokens(): number {
+  getAvailableTokens(): number {
     this.refill();
     return Math.floor(this.tokens);
   }
 
-  public getStats() {
+  getStats() {
     this.refill();
     return {
       availableTokens: Number(this.tokens.toFixed(2)),
@@ -68,11 +53,10 @@ export class TokenBucketRateLimiter {
       refillRatePerSec: this.refillRate,
       totalAccepted: this.totalAccepted,
       totalRejected: this.totalRejected,
-      utilizationPercent: Number((((this.capacity - this.tokens) / this.capacity) * 100).toFixed(1)),
     };
   }
 
-  public updateConfig(config: Partial<TokenBucketConfig>): void {
+  updateConfig(config: Partial<TokenBucketConfig>): void {
     this.refill();
     if (config.capacity !== undefined) {
       this.capacity = config.capacity;
@@ -83,9 +67,9 @@ export class TokenBucketRateLimiter {
     }
   }
 
-  public reset(): void {
+  reset(): void {
     this.tokens = this.capacity;
-    this.lastRefillTimestamp = Date.now();
+    this.lastRefill = Date.now();
     this.totalAccepted = 0;
     this.totalRejected = 0;
   }

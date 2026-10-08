@@ -1,13 +1,11 @@
-/**
- * Retry algorithms with Exponential Backoff and Jitter strategies.
- * Reference: AWS Architecture Blog - Exponential Backoff And Jitter
- */
+// Backoff formulas are from the AWS Architecture Blog post
+// "Exponential Backoff And Jitter".
 
 export enum JitterStrategy {
   NONE = 'NONE',
-  FULL = 'FULL',           // sleep = rand(0, min(cap, base * 2^attempt))
-  EQUAL = 'EQUAL',         // temp = min(cap, base * 2^attempt); sleep = temp/2 + rand(0, temp/2)
-  DECORRELATED = 'DECORRELATED', // sleep = min(cap, rand(base, sleep * 3))
+  FULL = 'FULL',
+  EQUAL = 'EQUAL',
+  DECORRELATED = 'DECORRELATED',
 }
 
 export interface RetryPolicy {
@@ -18,73 +16,74 @@ export interface RetryPolicy {
   retryableErrors?: (err: unknown) => boolean;
 }
 
+export interface AttemptInfo {
+  attempt: number; // 0-based
+  durationMs: number;
+  error?: unknown;
+  delayMs?: number; // set when we're about to sleep and try again
+}
+
+export const DEFAULT_POLICY: RetryPolicy = {
+  maxRetries: 3,
+  baseDelayMs: 50,
+  maxDelayMs: 2000,
+  jitter: JitterStrategy.FULL,
+};
+
 export class RetryExecutor {
-  public static calculateDelay(
-    attempt: number,
-    policy: RetryPolicy,
-    previousDelay = 0
-  ): number {
+  static calculateDelay(attempt: number, policy: RetryPolicy, previousDelay = 0): number {
     const { baseDelayMs, maxDelayMs, jitter } = policy;
-    const exponentialBackoff = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, attempt));
+    const ceiling = Math.min(maxDelayMs, baseDelayMs * 2 ** attempt);
 
     switch (jitter) {
       case JitterStrategy.NONE:
-        return exponentialBackoff;
+        return ceiling;
 
       case JitterStrategy.FULL:
-        return Math.floor(Math.random() * (exponentialBackoff + 1));
+        return Math.floor(Math.random() * (ceiling + 1));
 
       case JitterStrategy.EQUAL: {
-        const half = Math.floor(exponentialBackoff / 2);
+        const half = Math.floor(ceiling / 2);
         return half + Math.floor(Math.random() * (half + 1));
       }
 
       case JitterStrategy.DECORRELATED: {
-        const sleep = Math.min(
-          maxDelayMs,
-          Math.max(baseDelayMs, Math.floor(Math.random() * (previousDelay * 3 - baseDelayMs + 1) + baseDelayMs))
-        );
-        return sleep;
+        const upper = Math.max(baseDelayMs, previousDelay * 3);
+        const pick = baseDelayMs + Math.floor(Math.random() * (upper - baseDelayMs + 1));
+        return Math.min(maxDelayMs, pick);
       }
     }
   }
 
-  public static async executeWithRetry<T>(
+  static async executeWithRetry<T>(
     operation: (attempt: number) => Promise<T>,
-    policy: Partial<RetryPolicy> = {}
+    policy: Partial<RetryPolicy> = {},
+    onAttempt?: (info: AttemptInfo) => void
   ): Promise<{ result: T; attempts: number; totalBackoffDelayMs: number }> {
-    const fullPolicy: RetryPolicy = {
-      maxRetries: 3,
-      baseDelayMs: 50,
-      maxDelayMs: 2000,
-      jitter: JitterStrategy.FULL,
-      ...policy,
-    };
-
+    const p: RetryPolicy = { ...DEFAULT_POLICY, ...policy };
     let totalBackoffDelayMs = 0;
     let prevDelay = 0;
 
-    for (let attempt = 0; attempt <= fullPolicy.maxRetries; attempt++) {
+    for (let attempt = 0; ; attempt++) {
+      const started = Date.now();
       try {
         const result = await operation(attempt);
+        onAttempt?.({ attempt, durationMs: Date.now() - started });
         return { result, attempts: attempt + 1, totalBackoffDelayMs };
-      } catch (err) {
-        if (attempt === fullPolicy.maxRetries) {
-          throw err;
+      } catch (error) {
+        const durationMs = Date.now() - started;
+        const giveUp = attempt >= p.maxRetries || (p.retryableErrors && !p.retryableErrors(error));
+        if (giveUp) {
+          onAttempt?.({ attempt, durationMs, error });
+          throw error;
         }
 
-        if (fullPolicy.retryableErrors && !fullPolicy.retryableErrors(err)) {
-          throw err;
-        }
-
-        const delay = this.calculateDelay(attempt, fullPolicy, prevDelay);
-        prevDelay = delay;
-        totalBackoffDelayMs += delay;
-
-        await new Promise(resolve => setTimeout(resolve, delay));
+        const delayMs = this.calculateDelay(attempt, p, prevDelay);
+        prevDelay = delayMs;
+        totalBackoffDelayMs += delayMs;
+        onAttempt?.({ attempt, durationMs, error, delayMs });
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
     }
-
-    throw new Error('Retry exhausted');
   }
 }

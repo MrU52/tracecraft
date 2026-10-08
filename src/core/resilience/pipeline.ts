@@ -3,7 +3,7 @@ import { TokenBucketRateLimiter } from './rate-limiter';
 import { RetryExecutor, RetryPolicy, JitterStrategy } from './retry';
 
 export class RateLimitError extends Error {
-  constructor(message = 'Rate limit exceeded: Token bucket exhausted') {
+  constructor(message = 'Rate limit exceeded: token bucket is empty') {
     super(message);
     this.name = 'RateLimitError';
   }
@@ -11,7 +11,7 @@ export class RateLimitError extends Error {
 
 export class CircuitBreakerOpenError extends Error {
   constructor(circuitName: string) {
-    super(`Circuit breaker '${circuitName}' is OPEN - request rejected to prevent cascade`);
+    super(`Circuit breaker '${circuitName}' is OPEN - request rejected`);
     this.name = 'CircuitBreakerOpenError';
   }
 }
@@ -42,11 +42,19 @@ export interface ResiliencePipelineConfig {
   retryPolicy?: Partial<RetryPolicy>;
 }
 
+// Defaults for the pipeline are a bit tighter than RetryExecutor's own.
+const PIPELINE_RETRY_DEFAULTS: Partial<RetryPolicy> = {
+  maxRetries: 2,
+  baseDelayMs: 50,
+  maxDelayMs: 1000,
+  jitter: JitterStrategy.FULL,
+};
+
 export class ResiliencePipeline {
-  public readonly name: string;
-  public rateLimiter?: TokenBucketRateLimiter;
-  public circuitBreaker?: CircuitBreaker;
-  public retryPolicy?: Partial<RetryPolicy>;
+  readonly name: string;
+  rateLimiter?: TokenBucketRateLimiter;
+  circuitBreaker?: CircuitBreaker;
+  retryPolicy?: Partial<RetryPolicy>;
 
   constructor(config: ResiliencePipelineConfig) {
     this.name = config.name;
@@ -55,181 +63,85 @@ export class ResiliencePipeline {
     this.retryPolicy = config.retryPolicy;
   }
 
-  public async execute<T>(
+  async execute<T>(
     operation: (attempt: number) => Promise<T>,
     fallback?: (error: Error) => Promise<T> | T
   ): Promise<PipelineExecutionOutcome<T>> {
-    const startTime = Date.now();
+    const startedAt = Date.now();
     const attemptLogs: AttemptLog[] = [];
 
-    // 1. Check Rate Limiter
-    if (this.rateLimiter && !this.rateLimiter.tryAcquire(1)) {
-      const error = new RateLimitError();
+    // Builds the outcome, running the fallback first if there is one. A throwing
+    // fallback is swallowed and the original error is reported instead.
+    const finish = async (
+      status: PipelineExecutionOutcome<T>['status'],
+      error: Error,
+      stateOverride?: CircuitState
+    ): Promise<PipelineExecutionOutcome<T>> => {
+      let result: T | undefined;
+      let recovered = false;
       if (fallback) {
         try {
-          const fallbackRes = await fallback(error);
-          return {
-            status: 'RATE_LIMITED',
-            result: fallbackRes,
-            attempts: 0,
-            totalBackoffDelayMs: 0,
-            totalDurationMs: Date.now() - startTime,
-            circuitState: this.circuitBreaker ? this.circuitBreaker.getState() : CircuitState.CLOSED,
-            remainingTokens: this.rateLimiter.getAvailableTokens(),
-            attemptLogs,
-          };
+          result = await fallback(error);
+          recovered = true;
         } catch {
-          // Fallback failed
+          // fall through and report the original error
         }
       }
-
-      return {
-        status: 'RATE_LIMITED',
-        error,
-        attempts: 0,
-        totalBackoffDelayMs: 0,
-        totalDurationMs: Date.now() - startTime,
-        circuitState: this.circuitBreaker ? this.circuitBreaker.getState() : CircuitState.CLOSED,
-        remainingTokens: this.rateLimiter.getAvailableTokens(),
-        attemptLogs,
-      };
-    }
-
-    // 2. Check Circuit Breaker
-    if (this.circuitBreaker && this.circuitBreaker.getState() === CircuitState.OPEN) {
-      const error = new CircuitBreakerOpenError(this.circuitBreaker.config.name);
-      if (fallback) {
-        try {
-          const fallbackRes = await fallback(error);
-          return {
-            status: 'CIRCUIT_OPEN',
-            result: fallbackRes,
-            attempts: 0,
-            totalBackoffDelayMs: 0,
-            totalDurationMs: Date.now() - startTime,
-            circuitState: CircuitState.OPEN,
-            remainingTokens: this.rateLimiter ? this.rateLimiter.getAvailableTokens() : -1,
-            attemptLogs,
-          };
-        } catch {
-          // Fallback failed
-        }
-      }
-
-      return {
-        status: 'CIRCUIT_OPEN',
-        error,
-        attempts: 0,
-        totalBackoffDelayMs: 0,
-        totalDurationMs: Date.now() - startTime,
-        circuitState: CircuitState.OPEN,
-        remainingTokens: this.rateLimiter ? this.rateLimiter.getAvailableTokens() : -1,
-        attemptLogs,
-      };
-    }
-
-    // 3. Execute through CircuitBreaker + Retry
-    const runWithRetry = async () => {
-      const policy: RetryPolicy = {
-        maxRetries: this.retryPolicy?.maxRetries ?? 2,
-        baseDelayMs: this.retryPolicy?.baseDelayMs ?? 50,
-        maxDelayMs: this.retryPolicy?.maxDelayMs ?? 1000,
-        jitter: this.retryPolicy?.jitter ?? JitterStrategy.FULL,
-        retryableErrors: this.retryPolicy?.retryableErrors,
-      };
-
-      let totalBackoff = 0;
-      let prevDelay = 0;
-
-      for (let attempt = 0; attempt <= policy.maxRetries; attempt++) {
-        const attemptStart = Date.now();
-        try {
-          const result = await operation(attempt);
-          const duration = Date.now() - attemptStart;
-          attemptLogs.push({ attemptNumber: attempt + 1, durationMs: duration });
-          return { result, attempts: attempt + 1, totalBackoffDelayMs: totalBackoff };
-        } catch (err) {
-          const duration = Date.now() - attemptStart;
-          const errorMsg = err instanceof Error ? err.message : String(err);
-
-          if (attempt === policy.maxRetries) {
-            attemptLogs.push({ attemptNumber: attempt + 1, durationMs: duration, error: errorMsg });
-            throw err;
-          }
-
-          if (policy.retryableErrors && !policy.retryableErrors(err)) {
-            attemptLogs.push({ attemptNumber: attempt + 1, durationMs: duration, error: errorMsg });
-            throw err;
-          }
-
-          const delay = RetryExecutor.calculateDelay(attempt, policy, prevDelay);
-          prevDelay = delay;
-          totalBackoff += delay;
-
-          attemptLogs.push({
-            attemptNumber: attempt + 1,
-            durationMs: duration,
-            error: errorMsg,
-            backoffDelayMs: delay,
-          });
-
-          await new Promise(r => setTimeout(r, delay));
-        }
-      }
-      throw new Error('Retries exhausted');
+      // a failed call keeps its error even when the fallback covered for it;
+      // for rejections the fallback result replaces the error
+      const keepError = status === 'FAILED' || !recovered;
+      return this.outcome(status, startedAt, attemptLogs, stateOverride, {
+        result,
+        error: keepError ? error : undefined,
+      });
     };
 
-    try {
-      let executionResult: { result: T; attempts: number; totalBackoffDelayMs: number };
-
-      if (this.circuitBreaker) {
-        executionResult = await this.circuitBreaker.execute(() => runWithRetry());
-      } else {
-        executionResult = await runWithRetry();
-      }
-
-      return {
-        status: executionResult.attempts > 1 ? 'RETRIED' : 'SUCCESS',
-        result: executionResult.result,
-        attempts: executionResult.attempts,
-        totalBackoffDelayMs: executionResult.totalBackoffDelayMs,
-        totalDurationMs: Date.now() - startTime,
-        circuitState: this.circuitBreaker ? this.circuitBreaker.getState() : CircuitState.CLOSED,
-        remainingTokens: this.rateLimiter ? this.rateLimiter.getAvailableTokens() : -1,
-        attemptLogs,
-      };
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-
-      if (fallback) {
-        try {
-          const fallbackRes = await fallback(error);
-          return {
-            status: 'FAILED',
-            result: fallbackRes,
-            error,
-            attempts: attemptLogs.length,
-            totalBackoffDelayMs: attemptLogs.reduce((acc, l) => acc + (l.backoffDelayMs ?? 0), 0),
-            totalDurationMs: Date.now() - startTime,
-            circuitState: this.circuitBreaker ? this.circuitBreaker.getState() : CircuitState.CLOSED,
-            remainingTokens: this.rateLimiter ? this.rateLimiter.getAvailableTokens() : -1,
-            attemptLogs,
-          };
-        } catch {
-          // Fallback failed
-        }
-      }
-
-      return {
-        status: 'FAILED',
-        error,
-        attempts: attemptLogs.length,
-        totalBackoffDelayMs: attemptLogs.reduce((acc, l) => acc + (l.backoffDelayMs ?? 0), 0),
-        totalDurationMs: Date.now() - startTime,
-        circuitState: this.circuitBreaker ? this.circuitBreaker.getState() : CircuitState.CLOSED,
-        remainingTokens: this.rateLimiter ? this.rateLimiter.getAvailableTokens() : -1,
-        attemptLogs,
-      };
+    if (this.rateLimiter && !this.rateLimiter.tryAcquire(1)) {
+      return finish('RATE_LIMITED', new RateLimitError());
     }
+
+    if (this.circuitBreaker?.getState() === CircuitState.OPEN) {
+      return finish('CIRCUIT_OPEN', new CircuitBreakerOpenError(this.circuitBreaker.config.name), CircuitState.OPEN);
+    }
+
+    const policy = { ...PIPELINE_RETRY_DEFAULTS, ...this.retryPolicy };
+    const run = () =>
+      RetryExecutor.executeWithRetry(operation, policy, (info) => {
+        attemptLogs.push({
+          attemptNumber: info.attempt + 1,
+          durationMs: info.durationMs,
+          error: info.error === undefined ? undefined : info.error instanceof Error ? info.error.message : String(info.error),
+          backoffDelayMs: info.delayMs,
+        });
+      });
+
+    try {
+      const done = await (this.circuitBreaker ? this.circuitBreaker.execute(run) : run());
+      return this.outcome(done.attempts > 1 ? 'RETRIED' : 'SUCCESS', startedAt, attemptLogs, undefined, {
+        result: done.result,
+      });
+    } catch (err) {
+      return finish('FAILED', err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  private outcome<T>(
+    status: PipelineExecutionOutcome<T>['status'],
+    startedAt: number,
+    attemptLogs: AttemptLog[],
+    stateOverride: CircuitState | undefined,
+    extra: { result?: T; error?: Error }
+  ): PipelineExecutionOutcome<T> {
+    const retried = attemptLogs.filter((l) => l.backoffDelayMs !== undefined);
+    return {
+      status,
+      ...extra,
+      attempts: attemptLogs.length,
+      totalBackoffDelayMs: retried.reduce((sum, l) => sum + (l.backoffDelayMs ?? 0), 0),
+      totalDurationMs: Date.now() - startedAt,
+      circuitState: stateOverride ?? this.circuitBreaker?.getState() ?? CircuitState.CLOSED,
+      remainingTokens: this.rateLimiter ? this.rateLimiter.getAvailableTokens() : -1,
+      attemptLogs,
+    };
   }
 }

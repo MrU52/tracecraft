@@ -1,22 +1,19 @@
-/**
- * Finite State Machine Circuit Breaker Pattern (Netflix Hystrix / Resilience4j style)
- * Prevents cascading failures across distributed microservices by failing fast and
- * providing graceful degradation fallbacks.
- */
+// Circuit breaker, modelled loosely on Resilience4j: a count-based sliding
+// window decides when to trip, and a timer decides when to start probing.
 
 export enum CircuitState {
-  CLOSED = 'CLOSED',       // Normal operation: requests pass through
-  OPEN = 'OPEN',           // Tripped: requests fail fast or trigger fallback
-  HALF_OPEN = 'HALF_OPEN', // Probing: testing downstream service recovery
+  CLOSED = 'CLOSED',
+  OPEN = 'OPEN',
+  HALF_OPEN = 'HALF_OPEN',
 }
 
 export interface CircuitBreakerConfig {
   name: string;
-  slidingWindowSize: number;           // Number of requests in rolling window
-  failureRateThreshold: number;        // Percentage (0-100) of failures to trip
-  waitDurationInOpenStateMs: number;   // Delay before transitioning from OPEN to HALF_OPEN
-  permittedCallsInHalfOpen: number;    // Probes allowed in HALF_OPEN
-  slowCallDurationThresholdMs: number; // Latency that counts as a degraded/slow call
+  slidingWindowSize: number;
+  failureRateThreshold: number;        // percent, 0-100
+  waitDurationInOpenStateMs: number;
+  permittedCallsInHalfOpen: number;
+  slowCallDurationThresholdMs: number; // only counted in metrics, doesn't trip the breaker
 }
 
 export interface CircuitBreakerMetrics {
@@ -60,7 +57,7 @@ export class CircuitBreaker {
   constructor(config: Partial<CircuitBreakerConfig> & { name: string }) {
     this.config = {
       slidingWindowSize: 10,
-      failureRateThreshold: 50, // 50%
+      failureRateThreshold: 50,
       waitDurationInOpenStateMs: 5000,
       permittedCallsInHalfOpen: 3,
       slowCallDurationThresholdMs: 400,
@@ -80,9 +77,6 @@ export class CircuitBreaker {
     };
   }
 
-  /**
-   * Evaluates time-based state transitions (OPEN -> HALF_OPEN timeout)
-   */
   private evaluateStateTransitions(): void {
     if (this.state === CircuitState.OPEN) {
       const timeInOpen = Date.now() - this.lastStateChangeTimestamp;
@@ -108,7 +102,6 @@ export class CircuitBreaker {
       this.consecutiveFailures = 0;
     }
 
-    // Notify observers
     for (const listener of this.listeners) {
       try {
         listener(oldState, newState, this.config.name);
@@ -118,10 +111,8 @@ export class CircuitBreaker {
     }
   }
 
-  /**
-   * Executes a command through the circuit breaker protection layer.
-   * If the circuit is OPEN, immediately executes the fallback or throws CircuitBreakerOpenException.
-   */
+  // Runs `action` unless the breaker is open. If it's open (or half-open and out
+  // of probe slots) the fallback runs instead, or we throw when there isn't one.
   public async execute<T>(
     action: () => Promise<T>,
     fallback?: (error?: Error) => Promise<T> | T
@@ -138,7 +129,6 @@ export class CircuitBreaker {
 
     if (this.state === CircuitState.HALF_OPEN) {
       if (this.halfOpenTrialCalls >= this.config.permittedCallsInHalfOpen) {
-        // Exceeded trial probe allotment while waiting for results
         if (fallback) {
           this.fallbackCount++;
           return fallback(new Error(`Circuit Breaker '${this.config.name}' is testing in HALF_OPEN`));
@@ -178,7 +168,7 @@ export class CircuitBreaker {
     if (this.state === CircuitState.HALF_OPEN) {
       this.halfOpenTrialSuccesses++;
       if (this.halfOpenTrialSuccesses >= this.config.permittedCallsInHalfOpen) {
-        // Trial probes passed! Downstream service has healed.
+        // enough probes passed
         this.transitionTo(CircuitState.CLOSED);
       }
     } else if (this.state === CircuitState.CLOSED) {
@@ -192,7 +182,7 @@ export class CircuitBreaker {
     const isSlow = durationMs >= this.config.slowCallDurationThresholdMs;
 
     if (this.state === CircuitState.HALF_OPEN) {
-      // Any probe failure in HALF_OPEN immediately trips back to OPEN
+      // one bad probe is enough to go back to open
       this.transitionTo(CircuitState.OPEN);
     } else if (this.state === CircuitState.CLOSED) {
       this.recordOutcome({ success: false, durationMs, isSlow });
@@ -209,7 +199,7 @@ export class CircuitBreaker {
 
   private evaluateFailureThreshold(): void {
     if (this.slidingWindow.length < Math.min(3, this.config.slidingWindowSize)) {
-      return; // Not enough samples to evaluate statistically
+      return; // too few samples to judge
     }
 
     const failedCount = this.slidingWindow.filter(o => !o.success).length;
